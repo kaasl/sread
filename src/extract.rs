@@ -2,13 +2,11 @@ use std::path::Path;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Parser, Query, QueryCursor};
 
-use crate::languages::{python, typescript};
+use crate::languages::{python, rust, typescript};
 
-#[derive(Debug)]
-pub enum SymbolType {
+enum SymbolType {
     Function,
     Class,
-    Method { class: String },
     Interface,
 }
 
@@ -24,8 +22,24 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "ts" | "mts" | "cts" => Some(typescript::language_typescript()),
         "tsx" => Some(typescript::language_tsx()),
         "js" | "mjs" | "cjs" | "jsx" => Some(typescript::language_typescript()),
+        "rs" => Some(rust::language()),
         _ => None,
     }
+}
+
+fn lang_type(path: &Path) -> LangType {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("py") => LangType::Python,
+        Some("rs") => LangType::Rust,
+        _ => LangType::TypeScript,
+    }
+}
+
+#[derive(PartialEq)]
+enum LangType {
+    Python,
+    Rust,
+    TypeScript,
 }
 
 pub fn extract_symbol(
@@ -41,7 +55,7 @@ pub fn extract_symbol(
     let tree = parser.parse(source, None).ok_or("Failed to parse")?;
     let root = tree.root_node();
 
-    // Check for Class.method syntax
+    // for Class.method syntax
     if symbol.contains('.') {
         let parts: Vec<&str> = symbol.splitn(2, '.').collect();
         if parts.len() == 2 {
@@ -49,7 +63,7 @@ pub fn extract_symbol(
         }
     }
 
-    // Try function first, then class, then interface (for TS)
+    // try function first, then class, then interface (for TS)
     if let Ok(result) = extract_by_type(source, path, &lang, root, symbol, SymbolType::Function) {
         return Ok(result);
     }
@@ -71,10 +85,10 @@ fn extract_method(
     class_name: &str,
     method_name: &str,
 ) -> Result<String, String> {
-    let query_str = if is_python(path) {
-        python::method_query(class_name, method_name)
-    } else {
-        typescript::method_query(class_name, method_name)
+    let query_str = match lang_type(path) {
+        LangType::Python => python::method_query(class_name, method_name),
+        LangType::Rust => rust::method_query(class_name, method_name),
+        LangType::TypeScript => typescript::method_query(class_name, method_name),
     };
 
     let query = Query::new(lang, &query_str).map_err(|e| format!("Query error: {e}"))?;
@@ -103,27 +117,21 @@ fn extract_by_type(
     sym_type: SymbolType,
 ) -> Result<String, String> {
     let query_str = match sym_type {
-        SymbolType::Function => {
-            if is_python(path) {
-                python::function_query(name)
-            } else {
-                typescript::function_query(name)
-            }
-        }
-        SymbolType::Class => {
-            if is_python(path) {
-                python::class_query(name)
-            } else {
-                typescript::class_query(name)
-            }
-        }
-        SymbolType::Interface => {
-            if is_python(path) {
-                return Err("Python has no interfaces".to_string());
-            }
-            typescript::interface_query(name)
-        }
-        SymbolType::Method { .. } => return Err("Use extract_method".to_string()),
+        SymbolType::Function => match lang_type(path) {
+            LangType::Python => python::function_query(name),
+            LangType::Rust => rust::function_query(name),
+            LangType::TypeScript => typescript::function_query(name),
+        },
+        SymbolType::Class => match lang_type(path) {
+            LangType::Python => python::class_query(name),
+            LangType::Rust => rust::class_query(name),
+            LangType::TypeScript => typescript::class_query(name),
+        },
+        SymbolType::Interface => match lang_type(path) {
+            LangType::Python => return Err("Python has no interfaces".to_string()),
+            LangType::Rust => rust::trait_query(name),
+            LangType::TypeScript => typescript::interface_query(name),
+        },
     };
 
     let query = Query::new(lang, &query_str).map_err(|e| format!("Query error: {e}"))?;
@@ -133,8 +141,13 @@ fn extract_by_type(
     let capture_name = match sym_type {
         SymbolType::Function => "function",
         SymbolType::Class => "class",
-        SymbolType::Interface => "interface",
-        SymbolType::Method { .. } => unreachable!(),
+        SymbolType::Interface => {
+            if lang_type(path) == LangType::Rust {
+                "trait"
+            } else {
+                "interface"
+            }
+        }
     };
 
     while let Some(m) = matches.next() {
@@ -147,7 +160,7 @@ fn extract_by_type(
         }
     }
 
-    Err(format!("{:?} not found: {name}", sym_type))
+    Err(format!("{} not found: {name}", capture_name))
 }
 
 pub fn list_symbols(source: &str, path: &Path) -> Result<Vec<Symbol>, String> {
@@ -159,10 +172,10 @@ pub fn list_symbols(source: &str, path: &Path) -> Result<Vec<Symbol>, String> {
     let tree = parser.parse(source, None).ok_or("Failed to parse")?;
     let root = tree.root_node();
 
-    let query_str = if is_python(path) {
-        python::list_query()
-    } else {
-        typescript::list_query()
+    let query_str = match lang_type(path) {
+        LangType::Python => python::list_query(),
+        LangType::Rust => rust::list_query(),
+        LangType::TypeScript => typescript::list_query(),
     };
 
     let query = Query::new(&lang, query_str).map_err(|e| format!("Query error: {e}"))?;
@@ -191,6 +204,3 @@ pub fn list_symbols(source: &str, path: &Path) -> Result<Vec<Symbol>, String> {
     Ok(symbols)
 }
 
-fn is_python(path: &Path) -> bool {
-    path.extension().map(|e| e == "py").unwrap_or(false)
-}

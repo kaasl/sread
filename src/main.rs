@@ -34,7 +34,7 @@ fn main() -> ExitCode {
 fn parse_input(input: &str) -> Option<(String, String)> {
     // find the last colon that separates file from symbol
     // handle Windows paths (C:\...) by looking for pattern after extension
-    let extensions = [".py:", ".ts:", ".tsx:", ".js:", ".jsx:", ".mts:", ".cts:", ".mjs:", ".cjs:"];
+    let extensions = [".py:", ".rs:", ".ts:", ".tsx:", ".js:", ".jsx:", ".mts:", ".cts:", ".mjs:", ".cjs:"];
 
     for ext in extensions {
         if let Some(pos) = input.find(ext) {
